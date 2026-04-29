@@ -132,6 +132,33 @@ def _add_depth_camera(spec: mujoco.MjSpec) -> None:
     cam.fovy = 58.29
 
 
+# ── Stereo camera baseline = 120.114 mm ───────────────────────────────────
+_STEREO_MOUNT_POS = (0.15, 0.0, 0.3)   # relative to torso_link
+_STEREO_HALF_BASELINE = 0.060057        # half of 120.114 mm
+_STEREO_FOVY = 46.8
+_STEREO_RES = (1280, 720)
+
+
+def _add_stereo_cameras(spec: mujoco.MjSpec) -> None:
+    """Add a stereo camera pair (cam_left / cam_right) on a head mount."""
+    torso = spec.body(TORSO_BODY_NAME)
+    mount = torso.add_body()
+    mount.name = "stereo_camera_mount"
+    mount.pos[:] = _STEREO_MOUNT_POS
+
+    left = mount.add_camera()
+    left.name = "cam_left"
+    left.pos[:] = (0.0, _STEREO_HALF_BASELINE, 0.0)
+    left.fovy = _STEREO_FOVY
+    left.resolution[:] = _STEREO_RES
+
+    right = mount.add_camera()
+    right.name = "cam_right"
+    right.pos[:] = (0.0, -_STEREO_HALF_BASELINE, 0.0)
+    right.fovy = _STEREO_FOVY
+    right.resolution[:] = _STEREO_RES
+
+
 def _add_actuators(spec: mujoco.MjSpec) -> None:
     for idx, joint_name in enumerate(G1_JOINT_ORDER):
         create_position_actuator(
@@ -319,6 +346,7 @@ def build_scene_model(robot_xml_path: Path, terrain: str = "flat") -> mujoco.MjM
     _add_lights(spec)
     _add_solver(spec)
     _add_depth_camera(spec)
+    _add_stereo_cameras(spec)
     _add_actuators(spec)
 
     if terrain == "stairs":

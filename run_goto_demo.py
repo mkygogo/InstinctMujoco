@@ -198,6 +198,21 @@ def main() -> None:
     cam.azimuth = 135.0
     cam.elevation = -20.0
 
+    # ── Stereo camera views (fixed cameras attached to robot) ──
+    stereo_cam_left = mujoco.MjvCamera()
+    stereo_cam_left.type = mujoco.mjtCamera.mjCAMERA_FIXED
+    stereo_cam_left.fixedcamid = mujoco.mj_name2id(
+        model, mujoco.mjtObj.mjOBJ_CAMERA, "cam_left"
+    )
+    stereo_cam_right = mujoco.MjvCamera()
+    stereo_cam_right.type = mujoco.mjtCamera.mjCAMERA_FIXED
+    stereo_cam_right.fixedcamid = mujoco.mj_name2id(
+        model, mujoco.mjtObj.mjOBJ_CAMERA, "cam_right"
+    )
+    # Separate scene for stereo rendering (avoids marker interference)
+    stereo_scn = mujoco.MjvScene(model, maxgeom=10000)
+    STEREO_W, STEREO_H = 320, 180  # overlay size in pixels
+
     # ── Input state (captured by closures) ──
     btn_left = [False]
     btn_right = [False]
@@ -313,9 +328,37 @@ def main() -> None:
             if nav.active:
                 _add_target_marker(scn, nav.target[0], nav.target[1], nav.target_z)
 
-            # Render
+            # Render main viewport
             viewport = mujoco.MjrRect(0, 0, *glfw.get_framebuffer_size(window))
             mujoco.mjr_render(viewport, scn, ctx)
+
+            # ── Stereo camera overlays (top-right corner) ──
+            fw, fh = glfw.get_framebuffer_size(window)
+            pad = 8
+            # Left camera → top-right area, right next to centre
+            left_vp = mujoco.MjrRect(
+                fw - 2 * STEREO_W - 2 * pad, fh - STEREO_H - pad,
+                STEREO_W, STEREO_H,
+            )
+            # Right camera → far top-right
+            right_vp = mujoco.MjrRect(
+                fw - STEREO_W - pad, fh - STEREO_H - pad,
+                STEREO_W, STEREO_H,
+            )
+            for stereo_cam, svp, label in (
+                (stereo_cam_left, left_vp, "Left"),
+                (stereo_cam_right, right_vp, "Right"),
+            ):
+                mujoco.mjv_updateScene(
+                    model, data, vopt, pert, stereo_cam,
+                    mujoco.mjtCatBit.mjCAT_ALL, stereo_scn,
+                )
+                mujoco.mjr_render(svp, stereo_scn, ctx)
+                mujoco.mjr_overlay(
+                    mujoco.mjtFont.mjFONT_NORMAL,
+                    mujoco.mjtGridPos.mjGRID_TOPLEFT,
+                    svp, label, "", ctx,
+                )
 
             # Status overlay
             if nav.active:
