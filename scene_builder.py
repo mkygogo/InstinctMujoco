@@ -99,17 +99,18 @@ def _add_ground(spec: mujoco.MjSpec) -> None:
 
 
 def _add_lights(spec: mujoco.MjSpec) -> None:
-    spec.visual.headlight.ambient[:] = (0.15, 0.15, 0.15)
-    spec.visual.headlight.diffuse[:] = (0.4, 0.4, 0.4)
-    spec.visual.headlight.specular[:] = (0.1, 0.1, 0.1)
+    spec.visual.headlight.ambient[:] = (0.4, 0.4, 0.4)
+    spec.visual.headlight.diffuse[:] = (0.6, 0.6, 0.6)
+    spec.visual.headlight.specular[:] = (0.3, 0.3, 0.3)
 
     light = spec.worldbody.add_light()
     light.name = "sun"
-    light.pos[:] = (0.0, 0.0, 5.0)
-    light.dir[:] = (0.0, 0.2, -1.0)
+    light.pos[:] = (0.0, 0.0, 8.0)
+    light.dir[:] = (0.3, 0.2, -1.0)
     light.castshadow = True
-    light.diffuse[:] = (0.6, 0.6, 0.6)
-    light.specular[:] = (0.2, 0.2, 0.2)
+    light.diffuse[:] = (0.8, 0.8, 0.8)
+    light.specular[:] = (0.4, 0.4, 0.4)
+    light.ambient[:] = (0.3, 0.3, 0.3)
 
 
 def _add_solver(spec: mujoco.MjSpec) -> None:
