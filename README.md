@@ -17,6 +17,7 @@
 ```
 InstinctMujoco/
 ├── run_parkour_mujoco.py   # 主运行入口，MuJoCo 仿真循环
+├── run_goto_demo.py        # 交互式导航 Demo（双击选点，机器人自动走过去）
 ├── parkour_onnx_policy.py  # ONNX 策略封装与观测历史管理
 ├── robot_config.py         # G1 机器人配置（执行器参数、关节位姿、相机偏移）
 ├── scene_builder.py        # MuJoCo 场景构建（物理参数、地形、执行器）
@@ -78,6 +79,20 @@ pip install -e ../mjlab
 ```
 
 这将启动带有 viewer 的仿真，机器人以 0.5 m/s 速度攀爬楼梯。
+
+### 交互式导航 Demo（双击选点）
+
+```bash
+python run_goto_demo.py
+```
+
+启动后机器人原地站立。在场景中 **双击地面** 即可设置目标点，机器人会自动行走到该位置并停下，等待下一个目标。
+
+操作方式：
+- **双击**：在地面选取导航目标
+- **Backspace**：取消当前目标
+- **Esc**：退出
+- **左键拖动**：旋转视角 / **右键拖动**：平移视角 / **滚轮**：缩放
 
 ### 自定义运行
 
