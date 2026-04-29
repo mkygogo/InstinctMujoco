@@ -121,7 +121,8 @@ class G1MujocoRunner:
             height=36,
             fovy=58.29,
         )
-        self._depth_geomgroup = np.asarray([1, 0, 0, 0, 0, 0], dtype=np.uint8)
+        # group 0 = terrain (stairs etc.), group 3 = ground box (BVH workaround)
+        self._depth_geomgroup = np.asarray([1, 0, 0, 1, 0, 0], dtype=np.uint8)
         self.foot_geom_ids = self._resolve_foot_geom_ids()
         self._neutral_depth = self._compute_neutral_depth()
         self._neutral_depth_stack = self._make_constant_depth_stack(self._neutral_depth)

@@ -71,15 +71,26 @@ def _add_ground(spec: mujoco.MjSpec) -> None:
         texture="groundplane",
     ).edit_spec(spec)
 
-    # Use a large finite box instead of an infinite plane.
-    # mj_multiRay (BVH-accelerated) fails on infinite planes in MuJoCo 3.5.x.
+    # Visual infinite plane (group 0) – always rendered, no edge artifacts.
+    vis = spec.worldbody.add_geom()
+    vis.name = "ground_visual"
+    vis.type = mujoco.mjtGeom.mjGEOM_PLANE
+    vis.size[:] = (0.0, 0.0, 0.05)  # infinite
+    vis.pos[:] = (0.0, 0.0, 0.0)
+    vis.material = "groundplane"
+    vis.group = 0          # rendered (groups 0-2 shown by default)
+    vis.contype = 0        # no physics collision
+    vis.conaffinity = 0
+
+    # Physics + raycast finite box (group 3 – NOT rendered by default).
+    # mj_multiRay (BVH) fails on infinite planes in MuJoCo 3.5.x,
+    # so we use a large hidden box for raycasting + collision.
     ground = spec.worldbody.add_geom()
     ground.name = "ground"
     ground.type = mujoco.mjtGeom.mjGEOM_BOX
-    ground.size[:] = (200.0, 200.0, 0.5)
-    ground.pos[:] = (0.0, 0.0, -0.5)
-    ground.material = "groundplane"
-    ground.group = 0  # override default group=3 (hidden in viewer)
+    ground.size[:] = (200.0, 200.0, 0.025)
+    ground.pos[:] = (0.0, 0.0, -0.025)
+    ground.group = 3       # hidden from viewer; raycast via geomgroup[3]=1
     ground.condim = 3
     ground.contype = 1
     ground.conaffinity = 1
