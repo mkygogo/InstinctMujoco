@@ -485,8 +485,8 @@ def parse_args() -> argparse.Namespace:
         "--terrain",
         type=str,
         default="flat",
-        choices=["flat", "stairs"],
-        help="Terrain type: flat (default) or stairs",
+        choices=["flat", "stairs", "pyramid"],
+        help="Terrain type: flat (default), stairs, or pyramid",
     )
     p.add_argument("--headless", action="store_true")
     p.add_argument("--no-real-time", action="store_true")

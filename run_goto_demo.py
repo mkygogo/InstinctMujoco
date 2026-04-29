@@ -39,15 +39,18 @@ class NavController:
         self,
         arrive_dist: float = 0.3,
         max_forward: float = 0.5,
-        kp_yaw: float = 1.5,
-        turn_thresh: float = 0.4,
+        kp_yaw: float = 0.8,
+        turn_thresh: float = 0.5,
+        smoothing: float = 0.15,
     ):
         self.arrive_dist = arrive_dist
         self.max_forward = max_forward
         self.kp_yaw = kp_yaw
         self.turn_thresh = turn_thresh
+        self.smoothing = smoothing
         self.target: tuple[float, float] | None = None
         self.target_z: float = 0.0
+        self._prev_cmd = np.zeros(3, dtype=np.float32)
 
     def set(self, x: float, y: float, z: float = 0.0) -> None:
         self.target = (x, y)
@@ -55,15 +58,17 @@ class NavController:
 
     def clear(self) -> None:
         self.target = None
+        self._prev_cmd[:] = 0.0
 
     @property
     def active(self) -> bool:
         return self.target is not None
 
     def command(self, rx: float, ry: float, ryaw: float) -> np.ndarray:
-        """Return (vx, vy, vyaw) velocity command."""
+        """Return (vx, vy, vyaw) velocity command with smoothing."""
         if self.target is None:
-            return np.zeros(3, dtype=np.float32)
+            self._prev_cmd *= (1.0 - self.smoothing)
+            return self._prev_cmd.copy()
 
         dx = self.target[0] - rx
         dy = self.target[1] - ry
@@ -71,19 +76,28 @@ class NavController:
 
         if dist < self.arrive_dist:
             self.target = None
+            self._prev_cmd[:] = 0.0
             print("  ✓ Arrived!")
             return np.zeros(3, dtype=np.float32)
 
         heading = np.arctan2(dy, dx)
         err = (heading - ryaw + np.pi) % (2 * np.pi) - np.pi
-        yaw_cmd = float(np.clip(err * self.kp_yaw, -1.0, 1.0))
+        yaw_cmd = float(np.clip(err * self.kp_yaw, -0.6, 0.6))
 
         if abs(err) > self.turn_thresh:
-            fwd_cmd = 0.05  # creep while turning
+            fwd_cmd = 0.1
         else:
-            fwd_cmd = float(np.clip(dist * 0.8, 0.0, self.max_forward))
+            speed = self.max_forward * min(1.0, abs(err) / self.turn_thresh)
+            fwd_cmd = float(np.clip(
+                self.max_forward - speed * 0.5,
+                0.15, self.max_forward,
+            ))
 
-        return np.array([fwd_cmd, 0.0, yaw_cmd], dtype=np.float32)
+        raw = np.array([fwd_cmd, 0.0, yaw_cmd], dtype=np.float32)
+        # Exponential moving average for smooth command transitions
+        alpha = self.smoothing
+        self._prev_cmd = (1.0 - alpha) * self._prev_cmd + alpha * raw
+        return self._prev_cmd.copy()
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────
@@ -135,8 +149,9 @@ def main() -> None:
     import glfw
 
     ap = argparse.ArgumentParser(description="G1 go-to navigation demo")
-    ap.add_argument("--terrain", default="flat", choices=["flat", "stairs"])
-    ap.add_argument("--use-depth", action="store_true")
+    ap.add_argument("--terrain", default="pyramid", choices=["flat", "stairs", "pyramid"])
+    ap.add_argument("--use-depth", action="store_true", default=True)
+    ap.add_argument("--no-depth", dest="use_depth", action="store_false")
     ap.add_argument("--model-dir", type=Path, default=MODEL_DIR)
     ap.add_argument("--xml-path", type=Path, default=XML_PATH)
     args = ap.parse_args()

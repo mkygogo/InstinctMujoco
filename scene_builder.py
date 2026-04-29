@@ -71,11 +71,13 @@ def _add_ground(spec: mujoco.MjSpec) -> None:
         texture="groundplane",
     ).edit_spec(spec)
 
+    # Use a large finite box instead of an infinite plane.
+    # mj_multiRay (BVH-accelerated) fails on infinite planes in MuJoCo 3.5.x.
     ground = spec.worldbody.add_geom()
     ground.name = "ground"
-    ground.type = mujoco.mjtGeom.mjGEOM_PLANE
-    ground.size[:] = (0.0, 0.0, 0.05)  # infinite plane
-    ground.pos[:] = (0.0, 0.0, 0.0)
+    ground.type = mujoco.mjtGeom.mjGEOM_BOX
+    ground.size[:] = (200.0, 200.0, 0.5)
+    ground.pos[:] = (0.0, 0.0, -0.5)
     ground.material = "groundplane"
     ground.group = 0  # override default group=3 (hidden in viewer)
     ground.condim = 3
@@ -176,6 +178,127 @@ def _add_stairs(
         step.priority = 1
 
 
+def _add_pyramid_stairs(
+    spec: mujoco.MjSpec,
+    up_steps: int = 5,
+    down_steps: int = 5,
+    step_width: float = 8.0,
+    step_depth: float = 0.3,
+    step_height: float = 0.08,
+    start_x: float = 4.5,
+) -> None:
+    """Add a pyramid staircase: *up_steps* up, a flat platform, then *down_steps* down."""
+    TextureCfg(
+        name="stair_tex",
+        type="2d",
+        builtin="flat",
+        rgb1=(0.55, 0.45, 0.35),
+        rgb2=(0.45, 0.35, 0.25),
+        width=64,
+        height=64,
+    ).edit_spec(spec)
+    MaterialCfg(
+        name="stair_mat",
+        rgba=(1.0, 1.0, 1.0, 1.0),
+        texuniform=True,
+        texrepeat=(2.0, 2.0),
+        reflectance=0.1,
+        texture="stair_tex",
+    ).edit_spec(spec)
+
+    idx = 0
+    x = start_x
+
+    # ── Ramp approach: a gentle slope to the first step edge ──
+    ramp_len = 0.4
+    ramp = spec.worldbody.add_geom()
+    ramp.name = f"pyr_{idx}"
+    ramp.type = mujoco.mjtGeom.mjGEOM_BOX
+    ramp.size[:] = (ramp_len / 2.0, step_width / 2.0, step_height / 4.0)
+    ramp.pos[:] = (x + ramp_len / 2.0, 0.0, step_height / 4.0)
+    ramp.material = "stair_mat"
+    ramp.group = 0
+    ramp.condim = 3
+    ramp.contype = 1
+    ramp.conaffinity = 1
+    ramp.friction[:] = (1.0, 0.5, 0.5)
+    ramp.priority = 1
+    x += ramp_len
+    idx += 1
+
+    # ── Ascending ──
+    for i in range(up_steps):
+        height = (i + 1) * step_height
+        half_h = height / 2.0
+        cx = x + step_depth / 2.0
+        step = spec.worldbody.add_geom()
+        step.name = f"pyr_{idx}"
+        step.type = mujoco.mjtGeom.mjGEOM_BOX
+        step.size[:] = (step_depth / 2.0, step_width / 2.0, half_h)
+        step.pos[:] = (cx, 0.0, half_h)
+        step.material = "stair_mat"
+        step.group = 0
+        step.condim = 3
+        step.contype = 1
+        step.conaffinity = 1
+        step.friction[:] = (1.0, 0.5, 0.5)
+        step.priority = 1
+        x += step_depth
+        idx += 1
+
+    # ── Flat platform at the top ──
+    platform_len = 0.8
+    top_h = up_steps * step_height
+    plat = spec.worldbody.add_geom()
+    plat.name = f"pyr_{idx}"
+    plat.type = mujoco.mjtGeom.mjGEOM_BOX
+    plat.size[:] = (platform_len / 2.0, step_width / 2.0, top_h / 2.0)
+    plat.pos[:] = (x + platform_len / 2.0, 0.0, top_h / 2.0)
+    plat.material = "stair_mat"
+    plat.group = 0
+    plat.condim = 3
+    plat.contype = 1
+    plat.conaffinity = 1
+    plat.friction[:] = (1.0, 0.5, 0.5)
+    plat.priority = 1
+    x += platform_len
+    idx += 1
+
+    # ── Descending ──
+    for i in range(down_steps):
+        height = (down_steps - i) * step_height
+        half_h = height / 2.0
+        cx = x + step_depth / 2.0
+        step = spec.worldbody.add_geom()
+        step.name = f"pyr_{idx}"
+        step.type = mujoco.mjtGeom.mjGEOM_BOX
+        step.size[:] = (step_depth / 2.0, step_width / 2.0, half_h)
+        step.pos[:] = (cx, 0.0, half_h)
+        step.material = "stair_mat"
+        step.group = 0
+        step.condim = 3
+        step.contype = 1
+        step.conaffinity = 1
+        step.friction[:] = (1.0, 0.5, 0.5)
+        step.priority = 1
+        x += step_depth
+        idx += 1
+
+    # ── Ramp exit: gentle slope from last step to ground ──
+    ramp_exit = spec.worldbody.add_geom()
+    ramp_exit.name = f"pyr_{idx}"
+    ramp_exit.type = mujoco.mjtGeom.mjGEOM_BOX
+    ramp_exit.size[:] = (ramp_len / 2.0, step_width / 2.0, step_height / 4.0)
+    ramp_exit.pos[:] = (x + ramp_len / 2.0, 0.0, step_height / 4.0)
+    ramp_exit.material = "stair_mat"
+    ramp_exit.group = 0
+    ramp_exit.condim = 3
+    ramp_exit.contype = 1
+    ramp_exit.conaffinity = 1
+    ramp_exit.friction[:] = (1.0, 0.5, 0.5)
+    ramp_exit.priority = 1
+
+
 def build_scene_model(robot_xml_path: Path, terrain: str = "flat") -> mujoco.MjModel:
     """Build a complete MuJoCo model from the robot MJCF with scene elements."""
     spec = mujoco.MjSpec.from_file(str(robot_xml_path))
@@ -189,5 +312,7 @@ def build_scene_model(robot_xml_path: Path, terrain: str = "flat") -> mujoco.MjM
 
     if terrain == "stairs":
         _add_stairs(spec)
+    elif terrain == "pyramid":
+        _add_pyramid_stairs(spec)
 
     return spec.compile()
