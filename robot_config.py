@@ -10,10 +10,9 @@ from pathlib import Path
 import numpy as np
 
 # ── Paths ──────────────────────────────────────────────────────────────────
-XML_PATH = Path(
-    "/home/jr/ProjectInstinct/mujoco/InstinctMJ/src/instinct_mj/tasks/parkour/mjcf/g1_29dof_torsoBase_popsicle_with_shoe.xml"
-)
-MODEL_DIR = Path("/home/jr/ProjectInstinct/mujoco/pretrained_weights/parkour/exported")
+_SCRIPT_DIR = Path(__file__).resolve().parent
+XML_PATH = _SCRIPT_DIR / "mjcf" / "g1_29dof_torsoBase_popsicle_with_shoe.xml"
+MODEL_DIR = _SCRIPT_DIR / "models" / "parkour"
 
 # ── Body / geom names ─────────────────────────────────────────────────────
 HEAD_BODY_NAME = "head_link"
