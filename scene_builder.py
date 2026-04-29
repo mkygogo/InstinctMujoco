@@ -137,6 +137,8 @@ _STEREO_MOUNT_POS = (0.15, 0.0, 0.3)   # relative to torso_link
 _STEREO_HALF_BASELINE = 0.060057        # half of 120.114 mm
 _STEREO_FOVY = 46.8
 _STEREO_RES = (1280, 720)
+# Look along +X (forward), up = +Z.  Default MuJoCo camera looks along -Z.
+_STEREO_QUAT_WXYZ = (0.5, 0.5, -0.5, -0.5)
 
 
 def _add_stereo_cameras(spec: mujoco.MjSpec) -> None:
@@ -149,12 +151,14 @@ def _add_stereo_cameras(spec: mujoco.MjSpec) -> None:
     left = mount.add_camera()
     left.name = "cam_left"
     left.pos[:] = (0.0, _STEREO_HALF_BASELINE, 0.0)
+    left.quat[:] = _STEREO_QUAT_WXYZ
     left.fovy = _STEREO_FOVY
     left.resolution[:] = _STEREO_RES
 
     right = mount.add_camera()
     right.name = "cam_right"
     right.pos[:] = (0.0, -_STEREO_HALF_BASELINE, 0.0)
+    right.quat[:] = _STEREO_QUAT_WXYZ
     right.fovy = _STEREO_FOVY
     right.resolution[:] = _STEREO_RES
 
