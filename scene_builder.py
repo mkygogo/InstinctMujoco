@@ -99,18 +99,40 @@ def _add_ground(spec: mujoco.MjSpec) -> None:
 
 
 def _add_lights(spec: mujoco.MjSpec) -> None:
-    spec.visual.headlight.ambient[:] = (0.4, 0.4, 0.4)
-    spec.visual.headlight.diffuse[:] = (0.6, 0.6, 0.6)
-    spec.visual.headlight.specular[:] = (0.3, 0.3, 0.3)
+    # Reduce headlight (camera-aligned light hurts stereo matching by flattening texture)
+    spec.visual.headlight.ambient[:] = (0.15, 0.15, 0.15)
+    spec.visual.headlight.diffuse[:] = (0.2, 0.2, 0.2)
+    spec.visual.headlight.specular[:] = (0.1, 0.1, 0.1)
 
-    light = spec.worldbody.add_light()
-    light.name = "sun"
-    light.pos[:] = (0.0, 0.0, 8.0)
-    light.dir[:] = (0.3, 0.2, -1.0)
-    light.castshadow = True
-    light.diffuse[:] = (0.8, 0.8, 0.8)
-    light.specular[:] = (0.4, 0.4, 0.4)
-    light.ambient[:] = (0.3, 0.3, 0.3)
+    # Primary sun – high angle from front-right, casts shadows
+    sun = spec.worldbody.add_light()
+    sun.name = "sun"
+    sun.pos[:] = (5.0, -3.0, 10.0)
+    sun.dir[:] = (-0.4, 0.2, -1.0)
+    sun.castshadow = True
+    sun.diffuse[:] = (0.9, 0.88, 0.82)
+    sun.specular[:] = (0.5, 0.5, 0.5)
+    sun.ambient[:] = (0.15, 0.15, 0.15)
+
+    # Fill light – softer, from left side, no shadow (reduces harsh dark areas)
+    fill = spec.worldbody.add_light()
+    fill.name = "fill"
+    fill.pos[:] = (-4.0, 5.0, 6.0)
+    fill.dir[:] = (0.3, -0.4, -1.0)
+    fill.castshadow = False
+    fill.diffuse[:] = (0.4, 0.45, 0.5)
+    fill.specular[:] = (0.1, 0.1, 0.1)
+    fill.ambient[:] = (0.1, 0.1, 0.1)
+
+    # Back/rim light – creates edge highlights for depth separation
+    rim = spec.worldbody.add_light()
+    rim.name = "rim"
+    rim.pos[:] = (-3.0, 0.0, 8.0)
+    rim.dir[:] = (0.3, 0.0, -1.0)
+    rim.castshadow = False
+    rim.diffuse[:] = (0.35, 0.35, 0.4)
+    rim.specular[:] = (0.3, 0.3, 0.3)
+    rim.ambient[:] = (0.05, 0.05, 0.05)
 
 
 def _add_solver(spec: mujoco.MjSpec) -> None:
@@ -348,9 +370,9 @@ def _add_landmarks(spec: mujoco.MjSpec) -> None:
     TextureCfg(
         name="crate_tex",
         type="2d",
-        builtin="flat",
+        builtin="checker",
         rgb1=(0.6, 0.4, 0.2),
-        rgb2=(0.5, 0.3, 0.15),
+        rgb2=(0.45, 0.28, 0.12),
         width=64,
         height=64,
     ).edit_spec(spec)
@@ -358,15 +380,28 @@ def _add_landmarks(spec: mujoco.MjSpec) -> None:
         name="crate_mat",
         rgba=(1.0, 1.0, 1.0, 1.0),
         texuniform=True,
-        texrepeat=(2.0, 2.0),
+        texrepeat=(3.0, 3.0),
         reflectance=0.05,
         texture="crate_tex",
     ).edit_spec(spec)
+
+    # Pillar texture – gradient gives stereo matcher something to latch onto
+    TextureCfg(
+        name="pillar_tex",
+        type="2d",
+        builtin="gradient",
+        rgb1=(0.75, 0.75, 0.8),
+        rgb2=(0.45, 0.45, 0.5),
+        width=32,
+        height=64,
+    ).edit_spec(spec)
     MaterialCfg(
         name="pillar_mat",
-        rgba=(0.7, 0.7, 0.75, 1.0),
+        rgba=(1.0, 1.0, 1.0, 1.0),
         texuniform=False,
+        texrepeat=(1.0, 2.0),
         reflectance=0.3,
+        texture="pillar_tex",
     ).edit_spec(spec)
 
     # ── Colored pillars at cardinal directions ──

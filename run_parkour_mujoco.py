@@ -55,6 +55,9 @@ from scene_builder import (
     DEPTH_OUTPUT_SHAPE,
     build_scene_model,
 )
+from scene_builder_indoor import build_indoor_scene
+from scene_builder_apartment import build_apartment_scene
+from scene_builder_robocasa import build_robocasa_scene, build_robocasa_scene_preview
 
 # ── Defaults ───────────────────────────────────────────────────────────────
 DEFAULT_ACTION_CLIP = 100.0
@@ -84,9 +87,19 @@ class G1MujocoRunner:
         use_depth: bool = False,
         terrain: str = "flat",
         yaw_correction_gain: float = 0.0,
+        robocasa_spawn_pos: tuple[float, float, float] | None = None,
     ):
         self.policy = ParkourOnnxPolicy(model_dir)
-        self.model = build_scene_model(xml_path, terrain=terrain)
+        if terrain == "indoor":
+            self.model = build_indoor_scene(xml_path)
+        elif terrain == "apartment":
+            self.model = build_apartment_scene(xml_path)
+        elif terrain == "robocasa":
+            pos = robocasa_spawn_pos or (2.3, -2.7, 0.0)
+            self.model = build_robocasa_scene(xml_path, spawn_pos=pos)
+        else:
+            self.model = build_scene_model(xml_path, terrain=terrain)
+        self._spawn_pos = robocasa_spawn_pos  # None for non-robocasa terrains
         self.data = mujoco.MjData(self.model)
         self.command = np.asarray(command, dtype=np.float32)
         self.passive = passive
@@ -102,6 +115,13 @@ class G1MujocoRunner:
         self.depth_camera_id = mujoco.mj_name2id(
             self.model, mujoco.mjtObj.mjOBJ_CAMERA, "head_depth"
         )
+        self.base_joint_id = mujoco.mj_name2id(
+            self.model, mujoco.mjtObj.mjOBJ_JOINT, "floating_base_joint"
+        )
+        if self.base_joint_id < 0:
+            raise RuntimeError("floating_base_joint not found in MuJoCo model")
+        self.base_qpos_adr = int(self.model.jnt_qposadr[self.base_joint_id])
+        self.base_dof_adr = int(self.model.jnt_dofadr[self.base_joint_id])
         self.head_body_id = mujoco.mj_name2id(
             self.model, mujoco.mjtObj.mjOBJ_BODY, HEAD_BODY_NAME
         )
@@ -229,8 +249,15 @@ class G1MujocoRunner:
     def _initialize_pose(self) -> None:
         self.data.qpos[:] = 0.0
         self.data.qvel[:] = 0.0
-        self.data.qpos[0:3] = [0.0, 0.0, 0.82]
-        self.data.qpos[3:7] = [1.0, 0.0, 0.0, 0.0]
+        if self._spawn_pos is not None:
+            self.data.qpos[self.base_qpos_adr : self.base_qpos_adr + 3] = [
+                self._spawn_pos[0],
+                self._spawn_pos[1],
+                0.82,
+            ]
+        else:
+            self.data.qpos[self.base_qpos_adr : self.base_qpos_adr + 3] = [0.0, 0.0, 0.82]
+        self.data.qpos[self.base_qpos_adr + 3 : self.base_qpos_adr + 7] = [1.0, 0.0, 0.0, 0.0]
         for jname, jtarget in zip(G1_JOINT_ORDER, NOMINAL_JOINT_POS, strict=True):
             self.data.qpos[self.joint_index[jname].qpos] = float(jtarget)
         mujoco.mj_forward(self.model, self.data)
@@ -246,7 +273,7 @@ class G1MujocoRunner:
         min_z = min(
             float(self.data.geom_xpos[gid][2]) for gid in self.foot_geom_ids
         )
-        self.data.qpos[2] += clearance - min_z
+        self.data.qpos[self.base_qpos_adr + 2] += clearance - min_z
         mujoco.mj_forward(self.model, self.data)
 
     # ── Runtime helpers ────────────────────────────────────────────────────
@@ -258,8 +285,16 @@ class G1MujocoRunner:
             values[idx] = source[j.qpos if field == "qpos" else j.qvel]
         return values
 
+    def _base_pos(self) -> np.ndarray:
+        return np.asarray(
+            self.data.qpos[self.base_qpos_adr : self.base_qpos_adr + 3], dtype=np.float64
+        )
+
     def _base_quat_wxyz(self) -> np.ndarray:
-        return np.asarray(self.data.qpos[3:7], dtype=np.float64)
+        return np.asarray(
+            self.data.qpos[self.base_qpos_adr + 3 : self.base_qpos_adr + 7],
+            dtype=np.float64,
+        )
 
     def _yaw_only_quat_wxyz(self, quat: np.ndarray) -> np.ndarray:
         w, x, y, z = quat
@@ -333,7 +368,7 @@ class G1MujocoRunner:
         cmd = self.command.copy()
         if self.yaw_correction_gain > 0.0:
             yaw = self._current_yaw()
-            y = float(self.data.qpos[1])
+            y = float(self._base_pos()[1])
             # Combined heading correction: correct for both yaw drift
             # and lateral offset (steer back toward y=0).
             desired_yaw = np.arctan2(-y, 2.0)  # aim back toward centerline
@@ -371,15 +406,17 @@ class G1MujocoRunner:
         self.data.ctrl[self.actuator_ids] = self.target_qpos.astype(np.float64)
 
     def _configure_viewer_camera(self, viewer) -> None:
-        viewer.cam.lookat[:] = np.asarray(self.data.qpos[0:3], dtype=np.float64)
+        viewer.cam.lookat[:] = self._base_pos()
         viewer.cam.distance = 3.0
         viewer.cam.azimuth = 135.0
         viewer.cam.elevation = -20.0
 
     def _log_status(self) -> None:
-        q = self.data.qpos[3:7]
+        base_pos = self._base_pos()
+        q = self._base_quat_wxyz()
         print(
-            f"step={self.step_count:05d} base_z={self.data.qpos[2]:.4f} "
+            f"step={self.step_count:05d} base_xy=({base_pos[0]:.3f}, {base_pos[1]:.3f}) "
+            f"base_z={base_pos[2]:.4f} "
             f"ncon={self.data.ncon:02d} "
             f"quat=[{q[0]:.4f}, {q[1]:.4f}, {q[2]:.4f}, {q[3]:.4f}] "
             f"action=[{self.last_action.min():.3f}, {self.last_action.max():.3f}]"
@@ -430,9 +467,7 @@ class G1MujocoRunner:
                 while viewer.is_running() and steps > 0:
                     start = time.time()
                     self.step()
-                    viewer.cam.lookat[:] = np.asarray(
-                        self.data.qpos[0:3], dtype=np.float64
-                    )
+                    viewer.cam.lookat[:] = self._base_pos()
                     viewer.sync()
                     steps -= 1
                     if self.real_time:
