@@ -48,6 +48,7 @@ import numpy as np
 from robot_config import MODEL_DIR, XML_PATH
 from run_parkour_mujoco import G1MujocoRunner
 from scene_builder import CONTROL_DT
+from scene_builder_robocasa import build_robocasa_scene_preview
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
@@ -70,10 +71,10 @@ class NavController:
     def __init__(
         self,
         arrive_dist: float = 0.3,
-        max_forward: float = 0.5,
-        kp_yaw: float = 0.8,
-        turn_thresh: float = 0.5,
-        smoothing: float = 0.15,
+        max_forward: float = 1.0,
+        kp_yaw: float = 1.2,
+        turn_thresh: float = 0.4,
+        smoothing: float = 0.25,
     ):
         self.arrive_dist = arrive_dist
         self.max_forward = max_forward
@@ -123,14 +124,14 @@ class NavController:
 
         heading = float(np.arctan2(dy, dx))
         err = (heading - ryaw + np.pi) % (2 * np.pi) - np.pi
-        yaw_cmd = float(np.clip(err * self.kp_yaw, -0.6, 0.6))
+        yaw_cmd = float(np.clip(err * self.kp_yaw, -1.0, 1.0))
 
         if abs(err) > self.turn_thresh:
-            fwd_cmd = 0.1
+            fwd_cmd = 0.2
         else:
             speed = self.max_forward * min(1.0, abs(err) / self.turn_thresh)
             fwd_cmd = float(np.clip(
-                self.max_forward - speed * 0.5, 0.15, self.max_forward,
+                self.max_forward - speed * 0.5, 0.3, self.max_forward,
             ))
 
         raw = np.array([fwd_cmd, 0.0, yaw_cmd], dtype=np.float32)
@@ -149,6 +150,11 @@ def _get_yaw(qpos: np.ndarray) -> float:
     return float(np.arctan2(2 * (w * z + x * y), 1 - 2 * (y * y + z * z)))
 
 
+def _quat_to_yaw(quat_wxyz: np.ndarray) -> float:
+    w, x, y, z = quat_wxyz
+    return float(np.arctan2(2 * (w * z + x * y), 1 - 2 * (y * y + z * z)))
+
+
 # --------------------------------------------------------------------------
 # Frame server
 # --------------------------------------------------------------------------
@@ -163,6 +169,8 @@ class MujocoFrameServer:
         self._target_dt = 1.0 / fps
         self._nav = NavController()
         self._lock = threading.Lock()
+        self._cam_yaw: float = 0.0
+        self._cam_pitch: float = 0.0
         self._client_sock: socket.socket | None = None
         self._running = False
 
@@ -173,10 +181,176 @@ class MujocoFrameServer:
             self._run_headless()
 
     # ------------------------------------------------------------------
+    # Placement phase: show scene, let user double-click to place robot
+    # ------------------------------------------------------------------
+    def _placement_phase(self, glfw) -> tuple[float, float, float] | None:
+        """Show the RoboCasa scene and let the user pick a spawn point.
+
+        Returns (x, y, 0.0) on double-click, or None if window is closed.
+        """
+        logger.info("Loading RoboCasa scene preview (click to place robot)...")
+        model = build_robocasa_scene_preview()
+        data = mujoco.MjData(model)
+        mujoco.mj_forward(model, data)
+
+        if not glfw.init():
+            raise RuntimeError("Failed to initialise GLFW")
+        window = glfw.create_window(1280, 720, "RoboCasa — Double-click to place robot", None, None)
+        if not window:
+            glfw.terminate()
+            raise RuntimeError("Failed to create GLFW window")
+        glfw.make_context_current(window)
+        glfw.swap_interval(1)
+
+        scn = mujoco.MjvScene(model, maxgeom=10000)
+        ctx = mujoco.MjrContext(model, mujoco.mjtFontScale.mjFONTSCALE_150)
+        cam = mujoco.MjvCamera()
+        vopt = mujoco.MjvOption()
+        pert = mujoco.MjvPerturb()
+
+        # Default top-down-ish view of the kitchen
+        cam.type = mujoco.mjtCamera.mjCAMERA_FREE
+        cam.lookat[:] = (2.5, -2.5, 0.0)
+        cam.distance = 8.0
+        cam.azimuth = 90.0
+        cam.elevation = -45.0
+
+        # Input state
+        btn_left = [False]
+        btn_right = [False]
+        btn_mid = [False]
+        last_mx = [0.0]
+        last_my = [0.0]
+        last_click_time = [0.0]
+        result = [None]  # will hold (x, y, z)
+
+        # Marker state
+        _EYE3 = np.eye(3, dtype=np.float64).ravel()
+        _RGBA_SPAWN = np.array([0.1, 0.8, 0.2, 0.8], dtype=np.float32)
+        preview_pos = [None]  # last clicked position for preview
+
+        def _pick_spawn(cx, cy):
+            ww, wh = glfw.get_window_size(window)
+            fw, fh = glfw.get_framebuffer_size(window)
+            if ww == 0 or wh == 0:
+                return
+            relx = cx / ww
+            rely = 1.0 - cy / wh
+            aspect = fw / fh
+            selpnt = np.zeros(3, dtype=np.float64)
+            geomid = np.array([-1], dtype=np.int32)
+            flexid = np.array([-1], dtype=np.int32)
+            skinid = np.array([-1], dtype=np.int32)
+            body = mujoco.mjv_select(
+                model, data, vopt, aspect, relx, rely,
+                scn, selpnt, geomid, flexid, skinid,
+            )
+            if body >= 0:
+                # Only accept clicks near floor level (z < 0.5)
+                if selpnt[2] < 0.5:
+                    result[0] = (float(selpnt[0]), float(selpnt[1]), 0.0)
+                    logger.info("Robot spawn point selected: (%.2f, %.2f)", selpnt[0], selpnt[1])
+                else:
+                    # Show as preview but confirm with Enter
+                    preview_pos[0] = (float(selpnt[0]), float(selpnt[1]), float(selpnt[2]))
+                    logger.info("Clicked non-floor pos (%.2f, %.2f, z=%.2f) — click on floor instead",
+                                selpnt[0], selpnt[1], selpnt[2])
+
+        def on_mouse_button(win, button, act, mods):
+            btn_left[0] = glfw.get_mouse_button(win, glfw.MOUSE_BUTTON_LEFT) == glfw.PRESS
+            btn_right[0] = glfw.get_mouse_button(win, glfw.MOUSE_BUTTON_RIGHT) == glfw.PRESS
+            btn_mid[0] = glfw.get_mouse_button(win, glfw.MOUSE_BUTTON_MIDDLE) == glfw.PRESS
+            mx, my = glfw.get_cursor_pos(win)
+            last_mx[0], last_my[0] = mx, my
+            if button == glfw.MOUSE_BUTTON_LEFT and act == glfw.PRESS:
+                now = time.time()
+                if now - last_click_time[0] < 0.3:
+                    _pick_spawn(mx, my)
+                last_click_time[0] = now
+
+        def on_cursor_pos(win, xpos, ypos):
+            dx = xpos - last_mx[0]
+            dy = ypos - last_my[0]
+            last_mx[0], last_my[0] = xpos, ypos
+            if not (btn_left[0] or btn_right[0] or btn_mid[0]):
+                return
+            _, wh = glfw.get_window_size(win)
+            if wh == 0:
+                return
+            shift = glfw.get_key(win, glfw.KEY_LEFT_SHIFT) == glfw.PRESS
+            if btn_right[0]:
+                action = mujoco.mjtMouse.mjMOUSE_MOVE_H if shift else mujoco.mjtMouse.mjMOUSE_MOVE_V
+            elif btn_left[0]:
+                action = mujoco.mjtMouse.mjMOUSE_ROTATE_H if shift else mujoco.mjtMouse.mjMOUSE_ROTATE_V
+            else:
+                action = mujoco.mjtMouse.mjMOUSE_ZOOM
+            mujoco.mjv_moveCamera(model, action, dx / wh, dy / wh, scn, cam)
+
+        def on_scroll(win, xoff, yoff):
+            mujoco.mjv_moveCamera(model, mujoco.mjtMouse.mjMOUSE_ZOOM, 0, -0.05 * yoff, scn, cam)
+
+        def on_key(win, key, scancode, act, mods):
+            if act != glfw.PRESS:
+                return
+            if key == glfw.KEY_ESCAPE:
+                glfw.set_window_should_close(win, True)
+
+        glfw.set_mouse_button_callback(window, on_mouse_button)
+        glfw.set_cursor_pos_callback(window, on_cursor_pos)
+        glfw.set_scroll_callback(window, on_scroll)
+        glfw.set_key_callback(window, on_key)
+
+        logger.info("Placement mode — double-click on the floor to place robot, Esc to cancel")
+
+        while not glfw.window_should_close(window):
+            if result[0] is not None:
+                break
+
+            mujoco.mjv_updateScene(
+                model, data, vopt, pert, cam,
+                mujoco.mjtCatBit.mjCAT_ALL, scn,
+            )
+
+            # Draw spawn marker if preview
+            if preview_pos[0] is not None and scn.ngeom < scn.maxgeom - 2:
+                px, py, pz = preview_pos[0]
+                mujoco.mjv_initGeom(
+                    scn.geoms[scn.ngeom], mujoco.mjtGeom.mjGEOM_CYLINDER,
+                    np.array([0.2, 0.005, 0.0]), np.array([px, py, 0.01]),
+                    _EYE3, _RGBA_SPAWN,
+                )
+                scn.ngeom += 1
+
+            viewport = mujoco.MjrRect(0, 0, *glfw.get_framebuffer_size(window))
+            mujoco.mjr_render(viewport, scn, ctx)
+
+            # Overlay hint
+            mujoco.mjr_overlay(
+                mujoco.mjtFont.mjFONT_NORMAL, mujoco.mjtGridPos.mjGRID_BOTTOMLEFT,
+                viewport, "Double-click on floor to place robot | Esc to cancel", "", ctx,
+            )
+
+            glfw.swap_buffers(window)
+            glfw.poll_events()
+
+        # Cleanup placement window
+        spawn = result[0]
+        glfw.destroy_window(window)
+        # Don't terminate glfw — it will be reused by the main simulation loop
+        return spawn
+
+    # ------------------------------------------------------------------
     # GUI mode: custom GLFW window with double-click navigation
     # ------------------------------------------------------------------
     def _run_gui(self) -> None:
         import glfw
+
+        # For robocasa terrain, run placement phase first
+        spawn_pos = None
+        if self._terrain == "robocasa":
+            spawn_pos = self._placement_phase(glfw)
+            if spawn_pos is None:
+                return  # user closed the window
 
         logger.info("Initializing G1MujocoRunner (headless=False, terrain=%s)", self._terrain)
         runner = G1MujocoRunner(
@@ -193,6 +367,7 @@ class MujocoFrameServer:
             use_depth=False,
             terrain=self._terrain,
             yaw_correction_gain=0.0,
+            robocasa_spawn_pos=spawn_pos,
         )
         model = runner.model
         data = runner.data
@@ -203,9 +378,11 @@ class MujocoFrameServer:
         if cam_left_id < 0 or cam_right_id < 0:
             raise RuntimeError("cam_left / cam_right not found in MuJoCo model")
 
-        # Set offscreen buffer size for stereo frame capture
-        model.vis.global_.offwidth = _STEREO_WIDTH
-        model.vis.global_.offheight = _STEREO_HEIGHT
+        # Joint IDs for stereo camera yaw/pitch
+        _yaw_jnt_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, "stereo_cam_yaw")
+        _pitch_jnt_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, "stereo_cam_pitch")
+        _yaw_qadr = model.jnt_qposadr[_yaw_jnt_id] if _yaw_jnt_id >= 0 else -1
+        _pitch_qadr = model.jnt_qposadr[_pitch_jnt_id] if _pitch_jnt_id >= 0 else -1
 
         # GLFW window (no side panels)
         if not glfw.init():
@@ -228,7 +405,7 @@ class MujocoFrameServer:
         offscreen_scn = mujoco.MjvScene(model, maxgeom=10000)
 
         cam.type = mujoco.mjtCamera.mjCAMERA_FREE
-        cam.lookat[:] = data.qpos[:3]
+        cam.lookat[:] = runner._base_pos()
         cam.distance = 5.0
         cam.azimuth = 135.0
         cam.elevation = -20.0
@@ -362,16 +539,22 @@ class MujocoFrameServer:
                 self._process_commands()
 
                 # Update nav → runner command
-                rx, ry = float(data.qpos[0]), float(data.qpos[1])
-                ryaw = _get_yaw(data.qpos)
+                base_pos = runner._base_pos()
+                rx, ry = float(base_pos[0]), float(base_pos[1])
+                ryaw = _quat_to_yaw(runner._base_quat_wxyz())
                 with self._lock:
                     runner.command[:] = self._nav.command(rx, ry, ryaw)
+                    # Apply camera yaw/pitch from cam_look command
+                    if _yaw_qadr >= 0:
+                        data.qpos[_yaw_qadr] = self._cam_yaw
+                    if _pitch_qadr >= 0:
+                        data.qpos[_pitch_qadr] = self._cam_pitch
 
                 # Step simulation
                 runner.step()
 
                 # Smooth camera follow
-                cam.lookat[:] = 0.9 * cam.lookat + 0.1 * np.asarray(data.qpos[:3])
+                cam.lookat[:] = 0.9 * cam.lookat + 0.1 * base_pos
 
                 # Build scene
                 mujoco.mjv_updateScene(
@@ -451,9 +634,9 @@ class MujocoFrameServer:
                     _, right_jpeg = cv2.imencode(".jpg", right_bgr, encode_params)
 
                     meta = json.dumps({
-                        "x": float(data.qpos[0]),
-                        "y": float(data.qpos[1]),
-                        "z": float(data.qpos[2]),
+                        "x": float(base_pos[0]),
+                        "y": float(base_pos[1]),
+                        "z": float(base_pos[2]),
                         "yaw": ryaw,
                         "nav_state": self._nav.state,
                         "step": runner.step_count,
@@ -505,6 +688,12 @@ class MujocoFrameServer:
         if cam_left_id < 0 or cam_right_id < 0:
             raise RuntimeError("cam_left / cam_right not found in MuJoCo model")
 
+        # Joint IDs for stereo camera yaw/pitch
+        _yaw_jnt_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, "stereo_cam_yaw")
+        _pitch_jnt_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, "stereo_cam_pitch")
+        _yaw_qadr = model.jnt_qposadr[_yaw_jnt_id] if _yaw_jnt_id >= 0 else -1
+        _pitch_qadr = model.jnt_qposadr[_pitch_jnt_id] if _pitch_jnt_id >= 0 else -1
+
         renderer_left = mujoco.Renderer(model, height=_STEREO_HEIGHT, width=_STEREO_WIDTH)
         renderer_right = mujoco.Renderer(model, height=_STEREO_HEIGHT, width=_STEREO_WIDTH)
 
@@ -525,10 +714,16 @@ class MujocoFrameServer:
                 self._accept_client(server_sock)
                 self._process_commands()
 
-                rx, ry = float(data.qpos[0]), float(data.qpos[1])
-                ryaw = _get_yaw(data.qpos)
+                base_pos = runner._base_pos()
+                rx, ry = float(base_pos[0]), float(base_pos[1])
+                ryaw = _quat_to_yaw(runner._base_quat_wxyz())
                 with self._lock:
                     runner.command[:] = self._nav.command(rx, ry, ryaw)
+                    # Apply camera yaw/pitch from cam_look command
+                    if _yaw_qadr >= 0:
+                        data.qpos[_yaw_qadr] = self._cam_yaw
+                    if _pitch_qadr >= 0:
+                        data.qpos[_pitch_qadr] = self._cam_pitch
 
                 runner.step()
 
@@ -544,9 +739,9 @@ class MujocoFrameServer:
                     _, right_jpeg = cv2.imencode(".jpg", right_bgr, encode_params)
 
                     meta = json.dumps({
-                        "x": float(data.qpos[0]),
-                        "y": float(data.qpos[1]),
-                        "z": float(data.qpos[2]),
+                        "x": float(base_pos[0]),
+                        "y": float(base_pos[1]),
+                        "z": float(base_pos[2]),
                         "yaw": ryaw,
                         "nav_state": self._nav.state,
                         "step": runner.step_count,
@@ -625,6 +820,9 @@ class MujocoFrameServer:
                 )
             elif cmd.get("cmd") == "nav_cancel":
                 self._nav.clear()
+            elif cmd.get("cmd") == "cam_look":
+                self._cam_yaw = float(cmd.get("yaw", 0))
+                self._cam_pitch = float(cmd.get("pitch", 0))
 
     def _send_frame(self, left_jpeg: bytes, right_jpeg: bytes, meta: bytes) -> None:
         """Send a frame to the connected client."""
@@ -650,7 +848,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="MuJoCo stereo frame server for FFS")
     parser.add_argument("--port", type=int, default=9876, help="TCP port to listen on")
     parser.add_argument("--headless", action="store_true", help="Run without GUI window")
-    parser.add_argument("--terrain", default="flat", choices=["flat", "stairs", "pyramid"])
+    parser.add_argument("--terrain", default="flat", choices=["flat", "stairs", "pyramid", "indoor", "apartment", "robocasa"])
     parser.add_argument("--fps", type=float, default=25.0, help="Target frame rate for stereo rendering")
     parser.add_argument("--jpeg-quality", type=int, default=80, help="JPEG compression quality (0-100)")
     return parser.parse_args()
