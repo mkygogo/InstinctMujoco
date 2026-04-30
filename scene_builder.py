@@ -88,7 +88,7 @@ def _add_ground(spec: mujoco.MjSpec) -> None:
     ground = spec.worldbody.add_geom()
     ground.name = "ground"
     ground.type = mujoco.mjtGeom.mjGEOM_BOX
-    ground.size[:] = (200.0, 200.0, 0.025)
+    ground.size[:] = (50.0, 50.0, 0.025)
     ground.pos[:] = (0.0, 0.0, -0.025)
     ground.group = 3       # hidden from viewer; raycast via geomgroup[3]=1
     ground.condim = 3
@@ -138,8 +138,8 @@ _STEREO_MOUNT_POS = (0.15, 0.0, 0.3)   # relative to torso_link
 _STEREO_HALF_BASELINE = 0.060057        # half of 120.114 mm
 _STEREO_FOVY = 46.8
 _STEREO_RES = (1280, 720)
-# Look along +X (forward), up = +Z.  Default MuJoCo camera looks along -Z.
-_STEREO_QUAT_WXYZ = (0.5, 0.5, -0.5, -0.5)
+# Look along +X (forward) with ~10° downward pitch, up ≈ +Z.
+_STEREO_QUAT_WXYZ = (0.454519, 0.454519, -0.541675, -0.541675)
 
 
 def _add_stereo_cameras(spec: mujoco.MjSpec) -> None:
@@ -342,6 +342,100 @@ def _add_pyramid_stairs(
     ramp_exit.priority = 1
 
 
+def _add_landmarks(spec: mujoco.MjSpec) -> None:
+    """Add visual reference objects so movement is obvious in the scene."""
+    # Materials for landmarks
+    TextureCfg(
+        name="crate_tex",
+        type="2d",
+        builtin="flat",
+        rgb1=(0.6, 0.4, 0.2),
+        rgb2=(0.5, 0.3, 0.15),
+        width=64,
+        height=64,
+    ).edit_spec(spec)
+    MaterialCfg(
+        name="crate_mat",
+        rgba=(1.0, 1.0, 1.0, 1.0),
+        texuniform=True,
+        texrepeat=(2.0, 2.0),
+        reflectance=0.05,
+        texture="crate_tex",
+    ).edit_spec(spec)
+    MaterialCfg(
+        name="pillar_mat",
+        rgba=(0.7, 0.7, 0.75, 1.0),
+        texuniform=False,
+        reflectance=0.3,
+    ).edit_spec(spec)
+
+    # ── Colored pillars at cardinal directions ──
+    pillar_positions = [
+        (3.0, 0.0, "pillar_front", (0.2, 0.6, 0.9, 1.0)),    # blue, ahead
+        (-3.0, 0.0, "pillar_back", (0.9, 0.3, 0.2, 1.0)),    # red, behind
+        (0.0, 3.0, "pillar_left", (0.2, 0.8, 0.3, 1.0)),     # green, left
+        (0.0, -3.0, "pillar_right", (0.9, 0.8, 0.2, 1.0)),   # yellow, right
+    ]
+    for x, y, name, rgba in pillar_positions:
+        mat_name = f"{name}_mat"
+        MaterialCfg(
+            name=mat_name,
+            rgba=rgba,
+            reflectance=0.2,
+        ).edit_spec(spec)
+        p = spec.worldbody.add_geom()
+        p.name = name
+        p.type = mujoco.mjtGeom.mjGEOM_CYLINDER
+        p.size[:2] = (0.08, 0.6)  # radius, half-height
+        p.pos[:] = (x, y, 0.6)
+        p.material = mat_name
+        p.group = 0
+        p.contype = 1
+        p.conaffinity = 1
+
+    # ── Crates scattered around ──
+    crate_positions = [
+        (2.0, 1.5, "crate_1"),
+        (4.0, -1.0, "crate_2"),
+        (-1.5, 2.5, "crate_3"),
+        (5.0, 2.0, "crate_4"),
+        (-2.0, -2.0, "crate_5"),
+    ]
+    for x, y, name in crate_positions:
+        c = spec.worldbody.add_geom()
+        c.name = name
+        c.type = mujoco.mjtGeom.mjGEOM_BOX
+        c.size[:] = (0.2, 0.2, 0.2)
+        c.pos[:] = (x, y, 0.2)
+        c.material = "crate_mat"
+        c.group = 0
+        c.contype = 1
+        c.conaffinity = 1
+
+    # ── Spheres as colorful landmarks at farther distances ──
+    sphere_positions = [
+        (6.0, 0.0, "sphere_6m", (1.0, 0.2, 0.5, 1.0)),
+        (0.0, 6.0, "sphere_left6", (0.3, 0.9, 0.9, 1.0)),
+        (8.0, 3.0, "sphere_far", (1.0, 0.6, 0.0, 1.0)),
+    ]
+    for x, y, name, rgba in sphere_positions:
+        mat_name = f"{name}_mat"
+        MaterialCfg(
+            name=mat_name,
+            rgba=rgba,
+            reflectance=0.4,
+        ).edit_spec(spec)
+        s = spec.worldbody.add_geom()
+        s.name = name
+        s.type = mujoco.mjtGeom.mjGEOM_SPHERE
+        s.size[0] = 0.25
+        s.pos[:] = (x, y, 0.25)
+        s.material = mat_name
+        s.group = 0
+        s.contype = 1
+        s.conaffinity = 1
+
+
 def build_scene_model(robot_xml_path: Path, terrain: str = "flat") -> mujoco.MjModel:
     """Build a complete MuJoCo model from the robot MJCF with scene elements."""
     spec = mujoco.MjSpec.from_file(str(robot_xml_path))
@@ -353,6 +447,14 @@ def build_scene_model(robot_xml_path: Path, terrain: str = "flat") -> mujoco.MjM
     _add_depth_camera(spec)
     _add_stereo_cameras(spec)
     _add_actuators(spec)
+    _add_landmarks(spec)
+
+    # Ensure offscreen framebuffer is large enough for stereo camera rendering
+    spec.visual.global_.offwidth = max(spec.visual.global_.offwidth, _STEREO_RES[0])
+    spec.visual.global_.offheight = max(spec.visual.global_.offheight, _STEREO_RES[1])
+
+    # znear is a ratio of model extent; keep it tiny so close-up views work
+    spec.visual.map.znear = 0.001
 
     if terrain == "stairs":
         _add_stairs(spec)
